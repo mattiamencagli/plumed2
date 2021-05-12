@@ -25,11 +25,14 @@
 #include "tools/Vector.h"
 #include "tools/Random.h"
 #include "tools/OpenMP.h"
+#include "tools/Angle.h"
+#include "tools/Torsion.h"
 #include <string>
 #include <cstdio>
 #include <cmath>
 #include <vector>
 #include <memory>
+#include <fstream>
 
 using namespace std;
 
@@ -87,6 +90,21 @@ class SimpleMD:
   int write_statistics_last_time_reopened;
   FILE* write_statistics_fp;
 
+  std::vector<unsigned> bonds;
+  std::vector<double>   bonds_ref;
+  std::vector<double>   bonds_kappa;
+
+  std::vector<unsigned> angles;
+  std::vector<double>   angles_ref;
+  std::vector<double>   angles_kappa;
+
+  std::vector<unsigned> torsions;
+  std::vector<double>   torsions_ref;
+  std::vector<double>   torsions_kappa;
+
+  std::vector<unsigned> pairs;
+  std::vector<double>   pairs_ref;
+  std::vector<double>   pairs_kappa;
 
 public:
   static void registerKeywords( Keywords& keys ) {
@@ -313,6 +331,95 @@ private:
 #     pragma omp critical
       for(unsigned i=0; i<omp_forces.size(); i++) forces[i]+=omp_forces[i];
     }
+
+    for(unsigned i=0;i<bonds.size()/2; i++) {
+      auto iatom=bonds[2*i]-1;
+      auto jatom=bonds[2*i+1]-1;
+      auto distance=positions[iatom]-positions[jatom];
+      auto mod=modulo(distance);
+      auto force=-bonds_kappa[i]*(mod-bonds_ref[i])*distance/mod;
+      auto ene=bonds_kappa[i]*0.5*(mod-bonds_ref[i])*(mod-bonds_ref[i]);
+      forces[iatom]+=force;
+      forces[jatom]-=force;
+      engconf+=ene;
+    }
+
+    for(unsigned i=0;i<angles.size()/3; i++) {
+      auto iatom=angles[3*i]-1;
+      auto jatom=angles[3*i+1]-1;
+      auto katom=angles[3*i+2]-1;
+      auto distance1=positions[iatom]-positions[jatom];
+      auto distance2=positions[katom]-positions[jatom];
+
+      Angle a;
+      Vector d1,d2;
+      auto angle=a.compute(distance1,distance2,d1,d2);
+
+      auto diff=angle-angles_ref[i];
+
+      auto ene=angles_kappa[i]*0.5*diff*diff;
+      auto force=-angles_kappa[i]*diff;
+      forces[iatom]+=force*d1;
+      forces[jatom]-=force*d1;
+      forces[katom]+=force*d2;
+      forces[jatom]-=force*d2;
+      engconf+=ene;
+    }
+
+    for(unsigned i=0;i<torsions.size()/4; i++) {
+      auto iatom=torsions[4*i]-1;
+      auto jatom=torsions[4*i+1]-1;
+      auto katom=torsions[4*i+2]-1;
+      auto latom=torsions[4*i+3]-1;
+      auto distance1=positions[jatom]-positions[iatom];
+      auto distance2=positions[katom]-positions[jatom];
+      auto distance3=positions[latom]-positions[katom];
+
+      Torsion t;
+      Vector d1,d2,d3;
+      auto torsion=t.compute(-distance1,-distance2,-distance3,d1,d2,d3);
+      d1*=-1.0;
+      d2*=-1.0;
+      d3*=-1.0;
+
+      auto diff=torsion-torsions_ref[i];
+      while(diff>+pi) diff-=2*pi;
+      while(diff<-pi) diff+=2*pi;
+
+      auto ene=torsions_kappa[i]*0.5*diff*diff;
+      auto force=-torsions_kappa[i]*diff;
+      forces[iatom]-=force*d1;
+      forces[jatom]+=force*d1;
+      forces[jatom]-=force*d2;
+      forces[katom]+=force*d2;
+      forces[katom]-=force*d3;
+      forces[latom]+=force*d3;
+      engconf+=ene;
+    }
+
+    for(unsigned i=0;i<pairs.size()/2; i++) {
+      auto iatom=pairs[2*i]-1;
+      auto jatom=pairs[2*i+1]-1;
+      auto distance=positions[jatom]-positions[iatom];
+
+      auto moddistance=modulo(distance);
+      auto dist=moddistance-pairs_ref[i];
+
+      auto ene=0.0;
+      if(dist<0.0){
+        ene=-pairs_kappa[i];
+      } else {
+        auto dist2=dist*dist;
+        auto dist4=dist2*dist2;
+        auto dist5=dist4*dist;
+        auto dist6=dist4*dist*dist2;
+        auto f=1.0/(1.0+dist6);
+        ene=-pairs_kappa[i]*f;
+        auto force=-pairs_kappa[i]*6*dist5*f*f;
+        forces[iatom]-=force*distance/moddistance;
+        forces[jatom]+=force*distance/moddistance;
+      }
+      engconf+=ene;
     }
 
   }
@@ -464,6 +571,56 @@ private:
                wrapatoms,inputfile,outputfile,trajfile,statfile,
                maxneighbour,ndim,idum,epsilon,sigma);
 
+    {
+      std::ifstream ifs("use_bonds.dat");
+      unsigned i,j;
+      double dist,kappa;
+      while(ifs>>i>>j>>kappa>>dist) {
+        bonds.push_back(i);
+        bonds.push_back(j);
+        bonds_ref.push_back(dist);
+        bonds_kappa.push_back(kappa);
+      }
+    }
+
+    {
+      std::ifstream ifs("use_angles.dat");
+      unsigned i,j,k;
+      double ref,kappa;
+      while(ifs>>i>>j>>k>>kappa>>ref) {
+        angles.push_back(i);
+        angles.push_back(j);
+        angles.push_back(k);
+        angles_ref.push_back(ref);
+        angles_kappa.push_back(kappa);
+      }
+    }
+
+    {
+      std::ifstream ifs("use_torsions.dat");
+      unsigned i,j,k,l;
+      double ref,kappa;
+      while(ifs>>i>>j>>k>>l>>kappa>>ref) {
+        torsions.push_back(i);
+        torsions.push_back(j);
+        torsions.push_back(k);
+        torsions.push_back(l);
+        torsions_kappa.push_back(kappa);
+        torsions_ref.push_back(ref);
+      }
+    }
+
+    {
+      std::ifstream ifs("use_pairs.dat");
+      unsigned i,j;
+      double ref,kappa;
+      while(ifs>>i>>j>>kappa>>ref) {
+        pairs.push_back(i);
+        pairs.push_back(j);
+        pairs_kappa.push_back(kappa);
+        pairs_ref.push_back(ref);
+      }
+    }
 // number of atoms is read from file inputfile
     read_natoms(inputfile,natoms);
 
