@@ -284,7 +284,7 @@ private:
                     vector<vector<int> >& list) {
     double listcutoff2=listcutoff*listcutoff; // squared list cutoff
     list.assign(natoms,vector<int>());
-#   pragma omp parallel for num_threads(OpenMP::getNumThreads()) schedule(static,1)
+#   pragma omp parallel for num_threads(OpenMP::getNumThreads()) schedule(dynamic,1)
     for(int iatom=0; iatom<natoms-1; iatom++) {
       for(int jatom=iatom+1; jatom<natoms; jatom++) {
         auto distance=positions[iatom]-positions[jatom];
@@ -307,7 +307,7 @@ private:
 #   pragma omp parallel num_threads(OpenMP::getNumThreads())
     {
       std::vector<Vector> omp_forces(forces.size());
-      #pragma omp for reduction(+:engconf) schedule(static,1) nowait
+      #pragma omp for reduction(+:engconf) schedule(dynamic,1) nowait
       for(int iatom=0; iatom<natoms-1; iatom++) {
         for(int jlist=0;jlist<list[iatom].size();jlist++){
           const int jatom=list[iatom][jlist];
@@ -328,98 +328,103 @@ private:
           omp_forces[jatom]-=f;
         }
       }
+
+      #pragma omp for reduction(+:engconf) schedule(dynamic,1) nowait
+      for(unsigned i=0;i<bonds.size()/2; i++) {
+        auto iatom=bonds[2*i]-1;
+        auto jatom=bonds[2*i+1]-1;
+        auto distance=positions[iatom]-positions[jatom];
+        auto mod=modulo(distance);
+        auto force=-bonds_kappa[i]*(mod-bonds_ref[i])*distance/mod;
+        auto ene=bonds_kappa[i]*0.5*(mod-bonds_ref[i])*(mod-bonds_ref[i]);
+        omp_forces[iatom]+=force;
+        omp_forces[jatom]-=force;
+        engconf+=ene;
+      }
+
+      #pragma omp for reduction(+:engconf) schedule(dynamic,1) nowait
+      for(unsigned i=0;i<angles.size()/3; i++) {
+        auto iatom=angles[3*i]-1;
+        auto jatom=angles[3*i+1]-1;
+        auto katom=angles[3*i+2]-1;
+        auto distance1=positions[iatom]-positions[jatom];
+        auto distance2=positions[katom]-positions[jatom];
+
+        Angle a;
+        Vector d1,d2;
+        auto angle=a.compute(distance1,distance2,d1,d2);
+
+        auto diff=angle-angles_ref[i];
+
+        auto ene=angles_kappa[i]*0.5*diff*diff;
+        auto force=-angles_kappa[i]*diff;
+        omp_forces[iatom]+=force*d1;
+        omp_forces[jatom]-=force*d1;
+        omp_forces[katom]+=force*d2;
+        omp_forces[jatom]-=force*d2;
+        engconf+=ene;
+      }
+
+      #pragma omp for reduction(+:engconf) schedule(dynamic,1) nowait
+      for(unsigned i=0;i<torsions.size()/4; i++) {
+        auto iatom=torsions[4*i]-1;
+        auto jatom=torsions[4*i+1]-1;
+        auto katom=torsions[4*i+2]-1;
+        auto latom=torsions[4*i+3]-1;
+        auto distance1=positions[jatom]-positions[iatom];
+        auto distance2=positions[katom]-positions[jatom];
+        auto distance3=positions[latom]-positions[katom];
+
+        Torsion t;
+        Vector d1,d2,d3;
+        auto torsion=t.compute(-distance1,-distance2,-distance3,d1,d2,d3);
+        d1*=-1.0;
+        d2*=-1.0;
+        d3*=-1.0;
+
+        auto diff=torsion-torsions_ref[i];
+        while(diff>+pi) diff-=2*pi;
+        while(diff<-pi) diff+=2*pi;
+
+        auto ene=torsions_kappa[i]*0.5*diff*diff;
+        auto force=-torsions_kappa[i]*diff;
+        omp_forces[iatom]-=force*d1;
+        omp_forces[jatom]+=force*d1;
+        omp_forces[jatom]-=force*d2;
+        omp_forces[katom]+=force*d2;
+        omp_forces[katom]-=force*d3;
+        omp_forces[latom]+=force*d3;
+        engconf+=ene;
+      }
+
+      #pragma omp for reduction(+:engconf) schedule(dynamic,10) nowait
+      for(unsigned i=0;i<pairs.size()/2; i++) {
+        auto iatom=pairs[2*i]-1;
+        auto jatom=pairs[2*i+1]-1;
+        auto distance=positions[jatom]-positions[iatom];
+
+        auto moddistance=modulo(distance);
+        auto dist=moddistance-pairs_ref[i];
+
+        auto ene=0.0;
+        if(dist<0.0){
+          ene=-pairs_kappa[i];
+        } else {
+          auto dist2=dist*dist;
+          auto dist4=dist2*dist2;
+          auto dist5=dist4*dist;
+          auto dist6=dist4*dist*dist2;
+          auto f=1.0/(1.0+dist6);
+          ene=-pairs_kappa[i]*f;
+          auto force=-pairs_kappa[i]*6*dist5*f*f;
+          omp_forces[iatom]-=force*distance/moddistance;
+          omp_forces[jatom]+=force*distance/moddistance;
+        }
+        engconf+=ene;
+      }
+
 #     pragma omp critical
       for(unsigned i=0; i<omp_forces.size(); i++) forces[i]+=omp_forces[i];
-    }
-
-    for(unsigned i=0;i<bonds.size()/2; i++) {
-      auto iatom=bonds[2*i]-1;
-      auto jatom=bonds[2*i+1]-1;
-      auto distance=positions[iatom]-positions[jatom];
-      auto mod=modulo(distance);
-      auto force=-bonds_kappa[i]*(mod-bonds_ref[i])*distance/mod;
-      auto ene=bonds_kappa[i]*0.5*(mod-bonds_ref[i])*(mod-bonds_ref[i]);
-      forces[iatom]+=force;
-      forces[jatom]-=force;
-      engconf+=ene;
-    }
-
-    for(unsigned i=0;i<angles.size()/3; i++) {
-      auto iatom=angles[3*i]-1;
-      auto jatom=angles[3*i+1]-1;
-      auto katom=angles[3*i+2]-1;
-      auto distance1=positions[iatom]-positions[jatom];
-      auto distance2=positions[katom]-positions[jatom];
-
-      Angle a;
-      Vector d1,d2;
-      auto angle=a.compute(distance1,distance2,d1,d2);
-
-      auto diff=angle-angles_ref[i];
-
-      auto ene=angles_kappa[i]*0.5*diff*diff;
-      auto force=-angles_kappa[i]*diff;
-      forces[iatom]+=force*d1;
-      forces[jatom]-=force*d1;
-      forces[katom]+=force*d2;
-      forces[jatom]-=force*d2;
-      engconf+=ene;
-    }
-
-    for(unsigned i=0;i<torsions.size()/4; i++) {
-      auto iatom=torsions[4*i]-1;
-      auto jatom=torsions[4*i+1]-1;
-      auto katom=torsions[4*i+2]-1;
-      auto latom=torsions[4*i+3]-1;
-      auto distance1=positions[jatom]-positions[iatom];
-      auto distance2=positions[katom]-positions[jatom];
-      auto distance3=positions[latom]-positions[katom];
-
-      Torsion t;
-      Vector d1,d2,d3;
-      auto torsion=t.compute(-distance1,-distance2,-distance3,d1,d2,d3);
-      d1*=-1.0;
-      d2*=-1.0;
-      d3*=-1.0;
-
-      auto diff=torsion-torsions_ref[i];
-      while(diff>+pi) diff-=2*pi;
-      while(diff<-pi) diff+=2*pi;
-
-      auto ene=torsions_kappa[i]*0.5*diff*diff;
-      auto force=-torsions_kappa[i]*diff;
-      forces[iatom]-=force*d1;
-      forces[jatom]+=force*d1;
-      forces[jatom]-=force*d2;
-      forces[katom]+=force*d2;
-      forces[katom]-=force*d3;
-      forces[latom]+=force*d3;
-      engconf+=ene;
-    }
-
-    for(unsigned i=0;i<pairs.size()/2; i++) {
-      auto iatom=pairs[2*i]-1;
-      auto jatom=pairs[2*i+1]-1;
-      auto distance=positions[jatom]-positions[iatom];
-
-      auto moddistance=modulo(distance);
-      auto dist=moddistance-pairs_ref[i];
-
-      auto ene=0.0;
-      if(dist<0.0){
-        ene=-pairs_kappa[i];
-      } else {
-        auto dist2=dist*dist;
-        auto dist4=dist2*dist2;
-        auto dist5=dist4*dist;
-        auto dist6=dist4*dist*dist2;
-        auto f=1.0/(1.0+dist6);
-        ene=-pairs_kappa[i]*f;
-        auto force=-pairs_kappa[i]*6*dist5*f*f;
-        forces[iatom]-=force*distance/moddistance;
-        forces[jatom]+=force*distance/moddistance;
-      }
-      engconf+=ene;
     }
 
   }
