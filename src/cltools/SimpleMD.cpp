@@ -35,6 +35,8 @@
 #include <fstream>
 #include <sstream>
 #include "tools/Angle.h"
+#include "tools/Torsion.h"
+#define PI 3.14159265359
 
 using namespace std;
 
@@ -92,11 +94,9 @@ class SimpleMD:
   int write_statistics_last_time_reopened;
   FILE* write_statistics_fp;
   
-  	vector<double> d_b;
-	vector<int> A_b;
+  	vector<double> d_b, d_a, d_t, d_p;
+	vector<int> A_b, A_a, A_t, A_p;
 
-	vector<double> d_a;
-	vector<int> A_a;
 
 public:
   static void registerKeywords( Keywords& keys ) {
@@ -339,9 +339,9 @@ private:
 		  omp_forces[a2] -= ff;
 	  }
 	  
-      // **************************************************** ang
+      // **************************************************** angle
       #pragma omp for reduction(+ : engconf) schedule(static, 1) nowait
-      for(int i=0; i<d_b.size(); ++i){
+      for(int i=0; i<d_a.size(); ++i){
 		  int i3 = i*3;
 		  int a1 = A_a[i3];
 		  int a2 = A_a[i3+1];
@@ -359,6 +359,62 @@ private:
 		  omp_forces[a1] += ff21;
 		  omp_forces[a2] -= ff21 + ff23;
 		  omp_forces[a3] += ff23;
+	  }
+	  
+	  // **************************************************** torsion
+	  // this doesn't work yet...
+      #pragma omp for reduction(+ : engconf) schedule(static, 1) nowait
+      for(int i=0; i<d_t.size(); ++i){
+		  int i4 = i*4;
+		  int a1 = A_t[i4];
+		  int a2 = A_t[i4+1];
+		  int a3 = A_t[i4+2];
+		  int a4 = A_t[i4+3];
+		  Vector r21 = positions[a2] - positions[a1];
+		  Vector r32 = positions[a3] - positions[a2];
+		  Vector r43 = positions[a4] - positions[a3];
+		  Vector d21_pbc, d32_pbc, d43_pbc;
+		  pbc(cell, r21, d21_pbc);
+		  pbc(cell, r32, d32_pbc);
+		  pbc(cell, r43, d43_pbc);
+		  Torsion tor;
+		  double dphi = tor.compute(r21,r32,r43,d21_pbc,d32_pbc,d43_pbc) - d_t[i];    
+		  while(dphi > PI) dphi -= 2*PI;
+		  while(dphi < PI) dphi += 2*PI;
+		  engconf += 50.0 * dphi * dphi;
+		  Vector ff21 = 100.0 * dphi * d21_pbc;
+		  Vector ff32 = 100.0 * dphi * d32_pbc;
+		  Vector ff43 = 100.0 * dphi * d43_pbc;
+		  omp_forces[a1] += ff21;
+		  omp_forces[a2] += - ff21 + ff32;
+		  omp_forces[a3] += - ff32 + ff43;
+		  omp_forces[a4] -= ff43;
+	  }
+	  
+	  
+	  // **************************************************** pairs
+      #pragma omp for reduction(+ : engconf) schedule(static, 1) nowait
+      for(int i=0; i<d_p.size(); ++i){
+		  int i2 = i*2;
+		  int a1 = A_p[i2];
+		  int a2 = A_p[i2+1];
+		  Vector r = positions[a2] - positions[a1];
+		  Vector d_pbc;
+		  pbc(cell, r, d_pbc);
+		  double dx = modulo(d_pbc) - d_p[i];
+		  if( dx>0 ){
+			  double dx2 = dx * dx;
+			  double dx5 = dx2 * dx2 * dx;
+			  double dx6 = dx5 * dx;
+			  double inv = 1.0 / (1.0 + dx6);
+			  engconf -= 20.0 * inv;
+			  Vector ff = 120.0 * dx5 * inv * inv * r;
+		  } else {
+			  engconf -= 20.0;
+			  Vector ff = 0.0 * r;
+		  }
+		  omp_forces[a1] += ff;
+		  omp_forces[a2] -= ff;
 	  }
 	  
 	  #pragma omp critical
@@ -633,8 +689,51 @@ private:
 		++k;
 	}
 	file1.close();
-
-	
+// ****************************************** torsions      
+	ifstream file2("torsions.dat");
+	k=1;
+	while ( getline (file2,line) ){
+		if(k%2 != 0){
+			size_t pos = line.find("=");
+			string atoms=line.substr(pos+1);
+			stringstream ss(atoms); 
+			while(ss.good()) {
+				string substr;
+				getline(ss, substr, ',');
+				A_t.push_back(std::stoi(substr) - 1);
+			}
+		} else {
+			size_t pos = line.find("AT=");
+			size_t p=15;
+			string at=line.substr(pos+3,p);
+			d_t.push_back(std::stod(at,&p));
+		}
+		++k;
+	}
+	file2.close();
+// ****************************************** pairs 
+	ifstream file3("pairs.dat");
+	k=1;
+	while ( getline (file3,line) ){
+		if(line.size()>333) break;
+		if(k%2 != 0){
+			size_t pos = line.find("=");
+			string atoms=line.substr(pos+1);
+			stringstream ss(atoms); 
+			while(ss.good()) {
+				string substr;
+				getline(ss, substr, ',');
+				A_p.push_back(std::stoi(substr) - 1);
+			}
+		} else {
+			size_t pos = line.find("step(");
+			size_t p=15;
+			string at=line.substr(pos+5,p);
+			d_p.push_back(std::stod(at,&p));
+		}
+		++k;
+	}
+	file3.close();	
 	//ifstream file('torsions.dat');
 	//ifstream file('pairs.dat');
 
