@@ -31,6 +31,10 @@
 #include <vector>
 #include <memory>
 
+#include <iostream>
+#include <fstream>
+#include <sstream>
+
 using namespace std;
 
 namespace PLMD {
@@ -86,6 +90,9 @@ class SimpleMD:
   bool write_statistics_first;
   int write_statistics_last_time_reopened;
   FILE* write_statistics_fp;
+  
+  	vector<double> d_b;
+	vector<int> A_b;
 
 
 public:
@@ -310,12 +317,33 @@ private:
           omp_forces[jatom]-=f;
         }
       }
-#     pragma omp critical
-      for(unsigned i=0; i<omp_forces.size(); i++) forces[i]+=omp_forces[i];
+      
+      
+      // **************************************************** bond
+      #pragma omp for reduction(+ : engconf) schedule(static, 1) nowait
+      for(int i=0; i<d_b.size(); ++i){
+		  int a1 = A_b[2*i];
+		  int a2 = A_b[2*i+1];
+		  Vector r = positions[a2] - positions[a1];
+		  Vector d_pbc;
+		  pbc(cell, r, d_pbc);
+		  double mod = modulo(d_pbc);
+          double dx = mod - d_b[i];
+		  engconf += 500.0 * dx * dx;
+		  Vector ff = 1000.0 * dx / mod * d_pbc;
+		  omp_forces[a1] += ff;
+		  omp_forces[a2] -= ff;
+	  }
+	  
+      // **************************************************** ang
+      
+	  #pragma omp critical
+      for(unsigned i=0; i<omp_forces.size(); i++) 
+		forces[i]+=omp_forces[i];
     }
     }
 
-  }
+  //}
 
   void compute_engkin(const int natoms,const vector<double>& masses,const vector<Vector>& velocities,double & engkin)
   {
@@ -535,6 +563,35 @@ private:
     for(int i=0;i<list.size();i++) list_size+=list[i].size();
     fprintf(out,"List size: %d\n",list_size);
     for(int iatom=0; iatom<natoms; ++iatom) positions0[iatom]=positions[iatom];
+    
+    
+// ****************************************** bonds
+	string line;
+	ifstream file("bonds.dat");
+	int k=1;
+	while ( getline (file,line) ){
+		if(k%2 != 0){
+			size_t pos = line.find("=");
+			string atoms=line.substr(pos+1);
+			stringstream ss(atoms); 
+			while(ss.good()) {
+				string substr;
+				getline(ss, substr, ',');
+				A_b.push_back(std::stoi(substr) - 1);
+			}
+		} else {
+			size_t pos = line.find("AT=");
+			size_t p=15;
+			string at=line.substr(pos+3,p);
+			d_b.push_back(std::stod(at,&p));
+		}
+		++k;
+	}
+	file.close();
+      
+	//ifstream file('angles.dat');
+	//ifstream file('torsions.dat');
+	//ifstream file('pairs.dat');
 
 // forces are computed before starting md
     compute_forces(natoms,epsilon,sigma,positions,cell,forcecutoff,list,forces,engconf);
@@ -572,9 +629,10 @@ private:
         for(int i=0;i<list.size();i++) list_size+=list[i].size();
         fprintf(out,"List size: %d\n",list_size);
       }
+         
 
       compute_forces(natoms,epsilon,sigma,positions,cell,forcecutoff,list,forces,engconf);
-
+      
       if(plumed) {
         int istepplusone=istep+1;
         plumedWantsToStop=0;
