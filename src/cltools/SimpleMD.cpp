@@ -34,6 +34,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include "tools/Angle.h"
 
 using namespace std;
 
@@ -94,6 +95,8 @@ class SimpleMD:
   	vector<double> d_b;
 	vector<int> A_b;
 
+	vector<double> d_a;
+	vector<int> A_a;
 
 public:
   static void registerKeywords( Keywords& keys ) {
@@ -322,8 +325,9 @@ private:
       // **************************************************** bond
       #pragma omp for reduction(+ : engconf) schedule(static, 1) nowait
       for(int i=0; i<d_b.size(); ++i){
-		  int a1 = A_b[2*i];
-		  int a2 = A_b[2*i+1];
+		  int i2 = i*2;
+		  int a1 = A_b[i2];
+		  int a2 = A_b[i2+1];
 		  Vector r = positions[a2] - positions[a1];
 		  Vector d_pbc;
 		  pbc(cell, r, d_pbc);
@@ -336,7 +340,27 @@ private:
 	  }
 	  
       // **************************************************** ang
-      
+      #pragma omp for reduction(+ : engconf) schedule(static, 1) nowait
+      for(int i=0; i<d_b.size(); ++i){
+		  int i3 = i*3;
+		  int a1 = A_a[i3];
+		  int a2 = A_a[i3+1];
+		  int a3 = A_a[i3+2];
+		  Vector r21 = positions[a2] - positions[a1];
+		  Vector r23 = positions[a2] - positions[a3];
+		  Vector d21_pbc, d23_pbc;
+		  pbc(cell, r21, d21_pbc);
+		  pbc(cell, r23, d23_pbc);
+		  Angle ang;
+		  double dO = ang.compute(r21,r23,d21_pbc,d23_pbc) - d_a[i];         
+		  engconf += 500.0 * dO * dO;
+		  Vector ff21 = 1000.0 * dO * d21_pbc;
+		  Vector ff23 = 1000.0 * dO * d23_pbc;
+		  omp_forces[a1] += ff21;
+		  omp_forces[a2] -= ff21 + ff23;
+		  omp_forces[a3] += ff23;
+	  }
+	  
 	  #pragma omp critical
       for(unsigned i=0; i<omp_forces.size(); i++) 
 		forces[i]+=omp_forces[i];
@@ -564,11 +588,10 @@ private:
     fprintf(out,"List size: %d\n",list_size);
     for(int iatom=0; iatom<natoms; ++iatom) positions0[iatom]=positions[iatom];
     
-    
+   	string line;
+   	int k=1; 
 // ****************************************** bonds
-	string line;
 	ifstream file("bonds.dat");
-	int k=1;
 	while ( getline (file,line) ){
 		if(k%2 != 0){
 			size_t pos = line.find("=");
@@ -588,8 +611,30 @@ private:
 		++k;
 	}
 	file.close();
-      
-	//ifstream file('angles.dat');
+// ****************************************** angles      
+	ifstream file1("angles.dat");
+	k=1;
+	while ( getline (file1,line) ){
+		if(k%2 != 0){
+			size_t pos = line.find("=");
+			string atoms=line.substr(pos+1);
+			stringstream ss(atoms); 
+			while(ss.good()) {
+				string substr;
+				getline(ss, substr, ',');
+				A_a.push_back(std::stoi(substr) - 1);
+			}
+		} else {
+			size_t pos = line.find("AT=");
+			size_t p=15;
+			string at=line.substr(pos+3,p);
+			d_a.push_back(std::stod(at,&p));
+		}
+		++k;
+	}
+	file1.close();
+
+	
 	//ifstream file('torsions.dat');
 	//ifstream file('pairs.dat');
 
