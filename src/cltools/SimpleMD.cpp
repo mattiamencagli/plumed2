@@ -362,7 +362,6 @@ private:
 	  }
 	  
 	  // **************************************************** torsion
-	  // this doesn't work yet...
       #pragma omp for reduction(+ : engconf) schedule(static, 1) nowait
       for(int i=0; i<d_t.size(); ++i){
 		  int i4 = i*4;
@@ -379,16 +378,17 @@ private:
 		  pbc(cell, r43, d43_pbc);
 		  Torsion tor;
 		  double dphi = tor.compute(r21,r32,r43,d21_pbc,d32_pbc,d43_pbc) - d_t[i];    
-		  while(dphi > PI) dphi -= 2*PI;
-		  while(dphi < PI) dphi += 2*PI;
-		  engconf += 50.0 * dphi * dphi;
-		  Vector ff21 = 100.0 * dphi * d21_pbc;
-		  Vector ff32 = 100.0 * dphi * d32_pbc;
-		  Vector ff43 = 100.0 * dphi * d43_pbc;
-		  omp_forces[a1] += ff21;
-		  omp_forces[a2] += - ff21 + ff32;
-		  omp_forces[a3] += - ff32 + ff43;
-		  omp_forces[a4] -= ff43;
+		  //while(dphi > PI) dphi -= 2*PI;
+		  //while(dphi < PI) dphi += 2*PI;
+		  //engconf += 50.0 * dphi * dphi;
+		  engconf += 50 * (1.0 + cos(dphi));
+		  Vector ff21 = -100.0 * sin(dphi) * d21_pbc;
+		  Vector ff32 = -100.0 * sin(dphi) * d32_pbc;
+		  Vector ff43 = -100.0 * sin(dphi) * d43_pbc;
+		  omp_forces[a1] -= ff21;
+		  omp_forces[a2] += ff21 - ff32;
+		  omp_forces[a3] += ff32 - ff43;
+		  omp_forces[a4] += ff43;
 	  }
 	  
 	  
@@ -402,17 +402,15 @@ private:
 		  Vector d_pbc;
 		  pbc(cell, r, d_pbc);
 		  double dx = modulo(d_pbc) - d_p[i];
-		  if( dx>0 ){
-			  double dx2 = dx * dx;
-			  double dx5 = dx2 * dx2 * dx;
-			  double dx6 = dx5 * dx;
-			  double inv = 1.0 / (1.0 + dx6);
-			  engconf -= 20.0 * inv;
-			  Vector ff = 120.0 * dx5 * inv * inv * r;
-		  } else {
-			  engconf -= 20.0;
-			  Vector ff = 0.0 * r;
-		  }
+		  Vector ff;
+		  double dx2 = dx * dx;
+		  double dx5 = dx2 * dx2 * dx;
+		  double dx6 = dx5 * dx;
+		  //double dx12 = dx6 * dx6;
+		  double inv = 1.0 / (1.0 + dx6);
+		  engconf -= 20.0 * inv;
+		  ff = 120.0 * dx5 * inv * inv * r;
+		  //ff = 20.0 * (dx12 + 7.0 * dx6) * inv * inv * r;
 		  omp_forces[a1] += ff;
 		  omp_forces[a2] -= ff;
 	  }
