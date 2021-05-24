@@ -339,6 +339,7 @@ private:
 		  omp_forces[a2] -= ff;
 	  }
 	  
+	  
       // **************************************************** angle
       #pragma omp for reduction(+ : engconf) schedule(static, 1) nowait
       for(int i=0; i<d_a.size(); ++i){
@@ -361,6 +362,7 @@ private:
 		  omp_forces[a3] += ff23;
 	  }
 	  
+
 	  // **************************************************** torsion
       #pragma omp for reduction(+ : engconf) schedule(static, 1) nowait
       for(int i=0; i<d_t.size(); ++i){
@@ -369,29 +371,25 @@ private:
 		  int a2 = A_t[i4+1];
 		  int a3 = A_t[i4+2];
 		  int a4 = A_t[i4+3];
-		  Vector r21 = positions[a2] - positions[a1];
-		  Vector r32 = positions[a3] - positions[a2];
-		  Vector r43 = positions[a4] - positions[a3];
+		  Vector r21 = delta(positions[a2], positions[a1]);
+		  Vector r32 = delta(positions[a3], positions[a2]);
+		  Vector r43 = delta(positions[a4], positions[a3]);
 		  Vector d21_pbc, d32_pbc, d43_pbc;
-		  pbc(cell, r21, d21_pbc);
-		  pbc(cell, r32, d32_pbc);
-		  pbc(cell, r43, d43_pbc);
 		  Torsion tor;
 		  double dphi = tor.compute(r21,r32,r43,d21_pbc,d32_pbc,d43_pbc) - d_t[i];    
 		  //while(dphi > PI) dphi -= 2*PI;
 		  //while(dphi < PI) dphi += 2*PI;
-		  //engconf += 50.0 * dphi * dphi;
-		  engconf += 50 * (1.0 + cos(dphi));
+		  engconf += 100 * (1.0 + cos(dphi));
 		  Vector ff21 = -100.0 * sin(dphi) * d21_pbc;
 		  Vector ff32 = -100.0 * sin(dphi) * d32_pbc;
 		  Vector ff43 = -100.0 * sin(dphi) * d43_pbc;
-		  omp_forces[a1] -= ff21;
-		  omp_forces[a2] += ff21 - ff32;
-		  omp_forces[a3] += ff32 - ff43;
-		  omp_forces[a4] += ff43;
+		  omp_forces[a1] += ff21;
+		  omp_forces[a2] -= ff21 - ff32;
+		  omp_forces[a3] -= ff32 - ff43;
+		  omp_forces[a4] -= ff43;
 	  }
 	  
-	  
+
 	  // **************************************************** pairs
       #pragma omp for reduction(+ : engconf) schedule(static, 1) nowait
       for(int i=0; i<d_p.size(); ++i){
@@ -399,18 +397,19 @@ private:
 		  int a1 = A_p[i2];
 		  int a2 = A_p[i2+1];
 		  Vector r = positions[a2] - positions[a1];
-		  Vector d_pbc;
-		  pbc(cell, r, d_pbc);
-		  double dx = modulo(d_pbc) - d_p[i];
+		  double dx = modulo(r) - d_p[i];
 		  Vector ff;
-		  double dx2 = dx * dx;
-		  double dx5 = dx2 * dx2 * dx;
-		  double dx6 = dx5 * dx;
-		  //double dx12 = dx6 * dx6;
-		  double inv = 1.0 / (1.0 + dx6);
-		  engconf -= 20.0 * inv;
-		  ff = 120.0 * dx5 * inv * inv * r;
-		  //ff = 20.0 * (dx12 + 7.0 * dx6) * inv * inv * r;
+		  if(dx>0){
+			  double dx2 = dx * dx;
+			  double dx5 = dx2 * dx2 * dx;
+			  double dx6 = dx5 * dx;
+			  double inv = 1.0 / (1.0 + dx6);
+			  engconf -= 5.0 * inv;
+			  ff = 30.0 * dx5 * inv * inv * r / modulo(r);
+		  } else { 
+			  ff = 0 * r;
+			  engconf -+ 5.0;
+		  }
 		  omp_forces[a1] += ff;
 		  omp_forces[a2] -= ff;
 	  }
